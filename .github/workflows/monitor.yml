@@ -1,0 +1,61 @@
+name: Monitor
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+    # Weekly: re-enable the workflow so GitHub's 60-day inactivity rule never switches the schedule off.
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      simulate_failure:
+        description: 'Alert drill: name of a check to fail on purpose (e.g. link-external). Run twice to raise an alert.'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore failure streaks
+        uses: actions/cache/restore@v4
+        with:
+          path: state
+          key: monitor-state-${{ github.run_id }}
+          restore-keys: monitor-state-
+
+      - name: Run checks
+        env:
+          SIMULATE_FAILURE: ${{ inputs.simulate_failure }}
+        run: |
+          bash check.sh checks.conf > results.txt || true
+          cat results.txt
+
+      - name: Alert or recover
+        run: bash alert.sh results.txt
+
+      - name: Save failure streaks
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state
+          key: monitor-state-${{ github.run_id }}
+
+      - name: Keep the schedule enabled
+        if: github.event.schedule == '17 3 * * 1'
+        run: gh api -X PUT "repos/$GH_REPO/actions/workflows/monitor.yml/enable"
